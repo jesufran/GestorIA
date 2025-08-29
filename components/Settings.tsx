@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Folder, ThemeMode, AccentColor, NetlifyUser } from '../types';
 import { IconUser } from './icons/IconUser';
-import { IconPalette } from './icons/IconPalette';
+
 import { IconFolder } from './icons/IconFolder';
 import { IconDatabase } from './icons/IconDatabase';
 import { IconArchive } from './icons/IconArchive';

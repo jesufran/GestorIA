@@ -1,8 +1,7 @@
 import React from 'react';
 import { NetlifyUser } from '../types';
 import { IconUser } from './icons/IconUser';
-import { IconMail } from './icons/IconMail';
-import { IconExternalLink } from './icons/IconExternalLink';
+
 
 interface ProfileSettingsProps {
     user: NetlifyUser | null;
