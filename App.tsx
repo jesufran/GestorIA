@@ -1,0 +1,758 @@
+import React, { useState, useEffect, useRef } from 'react';
+import JSZip from 'jszip';
+import { Section, ThemeMode, Document, Task, OutgoingDocument, Folder, AccentColor, Toast, ToastType, NetlifyUser } from './types';
+import Sidebar from './components/Sidebar';
+import Header from './components/Header';
+import ContentPlaceholder from './components/ContentPlaceholder';
+import Principal from './components/Principal';
+import TasksList from './components/TasksList';
+import OutgoingDocModal from './components/OutgoingDocModal';
+import OutgoingDocumentsList from './components/OutgoingDocumentsList';
+import IncomingDocumentsList from './components/IncomingDocumentsList';
+import WelcomeCard from './components/WelcomeCard';
+import AiAssistantPanel from './components/AiAssistantPanel';
+import Reports from './components/Reports';
+import Settings from './components/Settings';
+import GlobalSearchResults from './components/GlobalSearchResults';
+import NotificationsModal from './components/NotificationsModal';
+import ToastContainer from './components/ToastContainer';
+import ArchiveViewBanner from './components/ArchiveViewBanner';
+import { saveArchive, getArchive, listArchives, saveFile, getFile } from './db';
+import { IconLoader } from './components/icons/IconLoader';
+import LoginScreen from './components/LoginScreen';
+
+declare global {
+    interface Window {
+        netlifyIdentity: any;
+    }
+}
+
+const sectionDescriptions: Record<Section, string> = {
+  [Section.Principal]: "Empiece a gestionar sus documentos y tareas.",
+  [Section.Entrantes]: "Consulte y gestione todos los documentos que ha recibido.",
+  [Section.Tareas]: "Organice, priorice y dé seguimiento a todas sus tareas.",
+  [Section.Salientes]: "Explore el archivo de todos los documentos que ha enviado.",
+  [Section.Informes]: "Genere reportes y visualice estadísticas de su flujo de trabajo.",
+  [Section.Ajustes]: "Personalice la configuración de la aplicación y su cuenta.",
+};
+
+const initialFolders: Folder[] = [
+    { id: '1', name: 'Ámbito I, Institucional', children: [
+        { id: '1-1', name: 'Dirección General', children: [] },
+        { id: '1-2', name: 'Recursos Humanos', children: [] },
+    ]},
+    { id: '2', name: 'Ámbito II, Ministerio de Educación', children: [
+        { id: '2-1', name: 'Departamento de Planificación', children: [
+            { id: '2-1-1', name: 'División de Presupuesto', children: [] },
+        ]}
+    ]}
+];
+
+interface SearchResult {
+    type: 'Entrante' | 'Saliente' | 'Tarea';
+    data: Document | OutgoingDocument | Task;
+    section: Section;
+}
+
+const APP_DATA_KEY = 'gestorProData';
+const APP_SETTINGS_KEY = 'gestorProSettings';
+
+// Helper function to create a savable version of the state by replacing files with IDs
+const createStorableState = (documents: Document[], tasks: Task[], outgoingDocuments: OutgoingDocument[], folderStructure: Folder[]) => {
+    return {
+        documents: documents.map(({ file, additionalFiles, ...doc }) => ({
+            ...doc,
+            fileId: file ? (doc.fileId || `file-${crypto.randomUUID()}`) : undefined,
+            fileName: file?.name,
+            additionalFileIds: additionalFiles?.map((f, i) => doc.additionalFileIds?.[i] || `file-${crypto.randomUUID()}`),
+            additionalFileNames: additionalFiles?.map(f => f.name),
+        })),
+        tasks: tasks.map(({ resultFile, ...task }) => ({
+            ...task,
+            resultFileId: resultFile ? (task.resultFileId || `file-${crypto.randomUUID()}`) : undefined,
+            resultFileName: resultFile?.name,
+        })),
+        outgoingDocuments: outgoingDocuments.map(({ file, ...doc }) => ({
+            ...doc,
+            fileId: file ? (doc.fileId || `file-${crypto.randomUUID()}`) : undefined,
+            fileName: file?.name,
+        })),
+        folderStructure,
+    };
+};
+
+const App: React.FC = () => {
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [user, setUser] = useState<NetlifyUser | null>(null);
+  const debounceTimer = useRef<number | null>(null);
+
+  // State initialization with defaults
+  const [themeMode, setThemeMode] = useState<ThemeMode>('system');
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [accentColor, setAccentColor] = useState<AccentColor>('indigo');
+  const [activeSection, setActiveSection] = useState<Section>(Section.Principal);
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [outgoingDocuments, setOutgoingDocuments] = useState<OutgoingDocument[]>([]);
+  const [folderStructure, setFolderStructure] = useState<Folder[]>(initialFolders);
+  const [taskBeingCompleted, setTaskBeingCompleted] = useState<Task | null>(null);
+  const [resultFileForTask, setResultFileForTask] = useState<File | null>(null);
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
+  const [globalSearchTerm, setGlobalSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearchActive, setIsSearchActive] = useState(false);
+  const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [archiveViewYear, setArchiveViewYear] = useState<number | null>(null);
+  const [availableArchives, setAvailableArchives] = useState<number[]>([]);
+  
+  // Sync state
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState(false);
+  const [isFetchingInitialData, setIsFetchingInitialData] = useState(false);
+
+  // Async data loading on startup
+  useEffect(() => {
+    const bootstrapApp = async () => {
+        try {
+            const settingsStr = localStorage.getItem(APP_SETTINGS_KEY);
+            const settings = settingsStr ? JSON.parse(settingsStr) : {};
+            setThemeMode(settings.themeMode || 'system');
+            setAccentColor(settings.accentColor || 'indigo');
+
+            // No longer loading data here initially; it will happen on login.
+        } catch (e) {
+            console.error("Error bootstrapping app:", e);
+        } finally {
+            setIsLoaded(true);
+        }
+    };
+    bootstrapApp();
+  }, []);
+
+    // Netlify Identity Authentication
+    useEffect(() => {
+        const loadDataFromFirestore = async (currentUser: NetlifyUser) => {
+            setIsFetchingInitialData(true);
+            try {
+                const response = await fetch('/.netlify/functions/getFromFirestore', {
+                    headers: { 'Authorization': `Bearer ${currentUser.token.access_token}` }
+                });
+                if (!response.ok) throw new Error('No se pudieron obtener los datos de la nube.');
+                
+                const data = await response.json();
+                
+                if (data && Object.keys(data).length > 0) {
+                     await loadData(data);
+                     addToast("Datos sincronizados desde la nube.", "info");
+                } else {
+                     // New user or empty data, clear local state
+                     resetLocalData();
+                }
+                 setSyncError(false);
+            } catch (error: any) {
+                console.error("Error fetching from Firestore:", error);
+                addToast(error.message, "error");
+                setSyncError(true);
+            } finally {
+                setIsFetchingInitialData(false);
+            }
+        };
+
+        if (isLoaded) {
+            window.netlifyIdentity.on('init', (user: NetlifyUser | null) => {
+                setUser(user);
+                setIsAuthReady(true);
+                if (user) {
+                   loadDataFromFirestore(user);
+                }
+            });
+            window.netlifyIdentity.on('login', (user: NetlifyUser) => {
+                setUser(user);
+                window.netlifyIdentity.close();
+                addToast(`Bienvenido, ${user.user_metadata?.full_name || user.email}`, 'success');
+                loadDataFromFirestore(user);
+            });
+            window.netlifyIdentity.on('logout', () => {
+                setUser(null);
+                addToast('Has cerrado sesión.', 'info');
+                resetLocalData();
+            });
+
+            window.netlifyIdentity.init();
+        }
+
+        return () => {
+            if (window.netlifyIdentity) {
+                window.netlifyIdentity.off('login');
+                window.netlifyIdentity.off('logout');
+            }
+        };
+    }, [isLoaded]);
+
+
+  const loadData = async (dataToLoad?: any) => {
+    try {
+        let data;
+        if (dataToLoad) {
+            data = dataToLoad;
+        } else {
+            const dataStr = localStorage.getItem(APP_DATA_KEY);
+            data = dataStr ? JSON.parse(dataStr) : {};
+        }
+
+        const hydratedDocuments = data.documents ? await Promise.all(data.documents.map(async (doc: any) => {
+            const file = doc.fileId ? await getFile(doc.fileId) : undefined;
+            const additionalFiles = doc.additionalFileIds ? await Promise.all(doc.additionalFileIds.map((id: string) => getFile(id))) : [];
+            return { ...doc, file, additionalFiles: additionalFiles.filter(f => f) };
+        })) : [];
+
+        const hydratedOutgoing = data.outgoingDocuments ? await Promise.all(data.outgoingDocuments.map(async (doc: any) => {
+            const file = doc.fileId ? await getFile(doc.fileId) : undefined;
+            return { ...doc, file };
+        })) : [];
+
+        const hydratedTasks = data.tasks ? await Promise.all(data.tasks.map(async (task: any) => {
+            const resultFile = task.resultFileId ? await getFile(task.resultFileId) : undefined;
+            return { ...task, resultFile };
+        })) : [];
+        
+        setDocuments(hydratedDocuments);
+        setTasks(hydratedTasks);
+        setOutgoingDocuments(hydratedOutgoing);
+        setFolderStructure(data.folderStructure || initialFolders);
+    } catch (e) {
+        console.error("Could not load and hydrate data", e);
+        addToast("Error al cargar los datos. Puede que estén corruptos.", "error");
+    }
+  };
+
+  const resetLocalData = () => {
+    setDocuments([]);
+    setTasks([]);
+    setOutgoingDocuments([]);
+    setFolderStructure(initialFolders);
+    localStorage.removeItem(APP_DATA_KEY);
+  };
+
+  const syncToFirestore = async () => {
+      if (!user) return;
+      setIsSyncing(true);
+      setSyncError(false);
+      try {
+          const storableState = createStorableState(documents, tasks, outgoingDocuments, folderStructure);
+          const response = await fetch('/.netlify/functions/syncToFirestore', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${user.token.access_token}` },
+              body: JSON.stringify(storableState)
+          });
+          if (!response.ok) throw new Error('Error en la respuesta del servidor de sincronización.');
+      } catch (err) {
+          console.error("Sync error:", err);
+          addToast("Error al sincronizar con la nube.", "error");
+          setSyncError(true);
+      } finally {
+          setIsSyncing(false);
+      }
+  };
+
+
+  // Effect for saving data locally and syncing to Firestore
+  useEffect(() => {
+    if (!isLoaded || archiveViewYear || isFetchingInitialData) return;
+    
+    const saveDataLocalAndSync = async () => {
+        try {
+            // 1. Save local files to IndexedDB
+            for (const doc of documents) {
+                if (doc.file && doc.fileId) await saveFile(doc.fileId, doc.file);
+                if (doc.additionalFiles && doc.additionalFileIds) {
+                    for (let i = 0; i < doc.additionalFiles.length; i++) {
+                        await saveFile(doc.additionalFileIds[i], doc.additionalFiles[i]);
+                    }
+                }
+            }
+            for (const task of tasks) {
+                if (task.resultFile && task.resultFileId) await saveFile(task.resultFileId, task.resultFile);
+            }
+            for (const doc of outgoingDocuments) {
+                if (doc.file && doc.fileId) await saveFile(doc.fileId, doc.file);
+            }
+
+            const storableState = createStorableState(documents, tasks, outgoingDocuments, folderStructure);
+            
+            // 2. Save state reference to localStorage
+            localStorage.setItem(APP_DATA_KEY, JSON.stringify(storableState));
+            
+            // 3. Debounce sync to Firestore
+            if (user) {
+              if (debounceTimer.current) clearTimeout(debounceTimer.current);
+              debounceTimer.current = window.setTimeout(syncToFirestore, 1500);
+            }
+
+        } catch (e) {
+            console.error("Could not save state", e);
+        }
+    };
+    saveDataLocalAndSync();
+  }, [documents, tasks, outgoingDocuments, folderStructure, isLoaded, archiveViewYear, user, isFetchingInitialData]);
+
+  const handleManualSync = () => {
+      if (debounceTimer.current) {
+          clearTimeout(debounceTimer.current);
+      }
+      addToast('Sincronizando con la nube...', 'info');
+      syncToFirestore();
+  };
+
+
+  const addToast = (message: string, type: ToastType = 'info') => {
+    const id = `toast-${Date.now()}`;
+    const newToast: Toast = { id, message, type };
+    setToasts(prev => [...prev, newToast]);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts(prev => prev.filter(toast => toast.id !== id));
+  };
+
+  useEffect(() => {
+    try {
+      if (!isLoaded) return;
+      const settingsToSave = { themeMode, accentColor };
+      localStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(settingsToSave));
+    } catch (e) {
+      console.error("Could not save settings to local storage", e);
+    }
+  }, [themeMode, accentColor, isLoaded]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleThemeChange = (e: MediaQueryListEvent | MediaQueryList) => {
+      if (themeMode === 'system') setTheme(e.matches ? 'dark' : 'light');
+    };
+    if (themeMode === 'system') {
+      handleThemeChange(mediaQuery);
+      mediaQuery.addEventListener('change', handleThemeChange);
+      return () => mediaQuery.removeEventListener('change', handleThemeChange);
+    } else {
+      setTheme(themeMode);
+    }
+  }, [themeMode]);
+
+  useEffect(() => {
+    const root = window.document.documentElement;
+    if (theme === 'dark') root.classList.add('dark');
+    else root.classList.remove('dark');
+  }, [theme]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const colors: Record<AccentColor, { light: string; dark: string }> = {
+      indigo: { light: '243 89% 60%', dark: '236 89% 77%' },
+      green: { light: '145 63% 42%', dark: '138 76% 58%' },
+      purple: { light: '262 84% 59%', dark: '263 78% 73%' },
+      orange: { light: '25 95% 53%', dark: '35 92% 65%' },
+      rose: { light: '347 77% 58%', dark: '346 89% 70%' },
+      sky: { light: '201 89% 57%', dark: '202 92% 65%' },
+      teal: { light: '173 70% 40%', dark: '174 74% 50%' },
+      slate: { light: '215 14% 34%', dark: '215 20% 65%' },
+    };
+    root.style.setProperty('--color-primary-light', colors[accentColor].light);
+    root.style.setProperty('--color-primary-dark', colors[accentColor].dark);
+  }, [accentColor]);
+  
+  useEffect(() => {
+      if (!globalSearchTerm.trim()) {
+          setSearchResults([]);
+          return;
+      }
+      const lowercasedTerm = globalSearchTerm.toLowerCase();
+      const foundDocs = documents.filter(doc => (doc.subject.toLowerCase().includes(lowercasedTerm) || doc.from.toLowerCase().includes(lowercasedTerm) || (doc.body && doc.body.toLowerCase().includes(lowercasedTerm)) || (doc.documentNumber && doc.documentNumber.toLowerCase().includes(lowercasedTerm)))).map(doc => ({ type: 'Entrante', data: doc, section: Section.Entrantes } as SearchResult));
+      const foundOutDocs = outgoingDocuments.filter(doc => (doc.subject.toLowerCase().includes(lowercasedTerm) || doc.to.toLowerCase().includes(lowercasedTerm) || (doc.body && doc.body.toLowerCase().includes(lowercasedTerm)) || (doc.documentNumber && doc.documentNumber.toLowerCase().includes(lowercasedTerm)))).map(doc => ({ type: 'Saliente', data: doc, section: Section.Salientes } as SearchResult));
+      const foundTasks = tasks.filter(task => (task.description.toLowerCase().includes(lowercasedTerm))).map(task => ({ type: 'Tarea', data: task, section: Section.Tareas } as SearchResult));
+      setSearchResults([...foundDocs, ...foundOutDocs, ...foundTasks]);
+  }, [globalSearchTerm, documents, outgoingDocuments, tasks]);
+
+  useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+          if (e.key === 'Escape') {
+              setIsSearchActive(false);
+              setGlobalSearchTerm('');
+          }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleSearchResultClick = (section: Section) => {
+      setActiveSection(section);
+      setGlobalSearchTerm('');
+      setIsSearchActive(false);
+  };
+
+  const toggleTheme = () => setTheme(prevTheme => prevTheme === 'light' ? 'dark' : 'light');
+  
+  const handleThemeModeChange = (mode: ThemeMode) => {
+    setThemeMode(mode);
+    if (mode !== 'system') setTheme(mode);
+  };
+
+  const toggleAiPanel = () => setIsAiPanelOpen(prev => !prev);
+
+  const addDocument = (document: Omit<Document, 'id' | 'createdAt' | 'orderNumber'>) => {
+    const today = new Date().toISOString().split('T')[0];
+    const documentsToday = documents.filter(doc => doc.createdAt.startsWith(today));
+    const newDocument: Document = {
+      id: `doc-${Date.now()}`,
+      ...document,
+      orderNumber: documentsToday.length + 1,
+      createdAt: new Date().toISOString(),
+      fileId: document.file ? `file-${crypto.randomUUID()}` : undefined,
+      additionalFileIds: document.additionalFiles?.map(() => `file-${crypto.randomUUID()}`),
+    };
+    setDocuments(prev => [newDocument, ...prev]);
+    addToast('Documento archivado exitosamente.', 'success');
+  };
+
+  const addDocumentAndTask = (document: Omit<Document, 'id' | 'createdAt' | 'orderNumber'>) => {
+    const today = new Date().toISOString().split('T')[0];
+    const documentsToday = documents.filter(doc => doc.createdAt.startsWith(today));
+    const newDocument: Document = {
+      id: `doc-${Date.now()}`,
+      ...document,
+      orderNumber: documentsToday.length + 1,
+      createdAt: new Date().toISOString(),
+      fileId: document.file ? `file-${crypto.randomUUID()}` : undefined,
+      additionalFileIds: document.additionalFiles?.map(() => `file-${crypto.randomUUID()}`),
+    };
+    const newTask: Task = {
+      id: `task-${Date.now()}`, description: document.procedure, status: 'pendiente',
+      relatedDocumentId: newDocument.id, createdAt: new Date().toISOString(), priority: 'media',
+      dueDate: document.sentAt,
+    };
+    setDocuments(prev => [newDocument, ...prev]);
+    setTasks(prev => [newTask, ...prev]);
+    addToast('Documento y tarea creados exitosamente.', 'success');
+  };
+
+  const addTask = (task: Omit<Task, 'id' | 'createdAt' | 'status'>) => {
+    const newTask: Task = { id: `task-${Date.now()}`, ...task, status: 'pendiente', createdAt: new Date().toISOString() };
+    setTasks(prev => [newTask, ...prev]);
+    addToast('Tarea rápida creada.', 'success');
+  };
+
+  const addOutgoingDocument = (doc: Omit<OutgoingDocument, 'id' | 'createdAt'>) => {
+    const newDoc: OutgoingDocument = {
+      id: `outdoc-${Date.now()}`, ...doc,
+      fileName: doc.file?.name, createdAt: new Date().toISOString(),
+      fileId: doc.file ? `file-${crypto.randomUUID()}` : undefined,
+    };
+    setOutgoingDocuments(prev => [newDoc, ...prev]);
+    addToast('Documento saliente registrado.', 'success');
+  };
+
+  const updateTask = (taskId: string, updatedData: Partial<Task>) => {
+    const oldTask = tasks.find(t => t.id === taskId);
+    if (!oldTask) return;
+    setTasks(prevTasks => prevTasks.map(task => task.id === taskId ? { ...task, ...updatedData } : task));
+    if (updatedData.status && updatedData.status !== oldTask.status) {
+        let statusMessage = '';
+        if (updatedData.status === 'en proceso') statusMessage = 'iniciada';
+        if (updatedData.status === 'completada') statusMessage = 'completada';
+        if (statusMessage) addToast(`Tarea "${oldTask.description.substring(0, 20)}..." marcada como ${statusMessage}.`, 'info');
+    } else if (!updatedData.status) {
+         addToast(`Tarea "${oldTask.description.substring(0, 20)}..." actualizada.`, 'info');
+    }
+  };
+
+  const handleStartTaskCompletion = (task: Task, resultFile: File) => {
+    setTaskBeingCompleted(task);
+    setResultFileForTask(resultFile);
+  };
+
+  const handleFinalizeCompletion = (outgoingDocData: Omit<OutgoingDocument, 'id' | 'createdAt' | 'relatedTaskId' | 'file'>) => {
+    if (!taskBeingCompleted || !resultFileForTask) return;
+    const resultFileId = `file-${crypto.randomUUID()}`;
+    const newOutgoingDoc: OutgoingDocument = {
+      id: `outdoc-${Date.now()}`, ...outgoingDocData,
+      file: resultFileForTask, fileName: resultFileForTask.name,
+      fileId: resultFileId,
+      relatedTaskId: taskBeingCompleted.id, createdAt: new Date().toISOString(),
+    };
+    setOutgoingDocuments(prev => [newOutgoingDoc, ...prev]);
+    setTasks(prevTasks => prevTasks.map(t => t.id === taskBeingCompleted.id ? { ...t, status: 'completada', completedAt: new Date().toISOString(), resultFile: resultFileForTask, resultFileId } : t));
+    setTaskBeingCompleted(null);
+    setResultFileForTask(null);
+    addToast('Tarea completada y documento de salida registrado.', 'success');
+  };
+
+  const relatedDocumentForTask = taskBeingCompleted ? documents.find(d => d.id === taskBeingCompleted.relatedDocumentId) : undefined;
+
+  const addFolder = (name: string, parentId: string | null) => {
+    const newFolder: Folder = { id: `folder-${Date.now()}`, name, children: [] };
+    if (!parentId) {
+        setFolderStructure(prev => [...prev, newFolder]);
+        addToast(`Ámbito "${name}" creado.`, 'success');
+        return;
+    }
+    const updateRecursively = (folders: Folder[]): Folder[] => folders.map(f => {
+        if (f.id === parentId) return { ...f, children: [...f.children, newFolder] };
+        if (f.children.length > 0) return { ...f, children: updateRecursively(f.children) };
+        return f;
+    });
+    setFolderStructure(updateRecursively);
+    addToast(`Carpeta "${name}" creada.`, 'success');
+  };
+
+  const renameFolder = (id: string, newName: string) => {
+     const updateRecursively = (folders: Folder[]): Folder[] => folders.map(f => {
+        if (f.id === id) return { ...f, name: newName };
+        if (f.children.length > 0) return { ...f, children: updateRecursively(f.children) };
+        return f;
+    });
+    setFolderStructure(updateRecursively);
+    addToast(`Carpeta renombrada a "${newName}".`, 'success');
+  };
+
+  const deleteFolder = (id: string) => {
+    const updateRecursively = (folders: Folder[]): Folder[] => folders.filter(f => f.id !== id).map(f => {
+        if (f.children.length > 0) return { ...f, children: updateRecursively(f.children) };
+        return f;
+    });
+    setFolderStructure(updateRecursively);
+    addToast('Carpeta eliminada.', 'success');
+  };
+  
+  const restoreDataFromZipBlob = async (blob: Blob) => {
+      const zip = await JSZip.loadAsync(blob);
+      const dataFile = zip.file("data.json");
+      if (!dataFile) throw new Error("El archivo de respaldo es inválido o está corrupto (falta data.json).");
+
+      const jsonData = await dataFile.async("string");
+      const restoredData = JSON.parse(jsonData);
+
+      const processDocFiles = async (doc: any, folder: string) => {
+        if (doc.fileName) {
+            const fileEntry = zip.file(`${folder}/${doc.fileName}`);
+            if(fileEntry) {
+                const blob = await fileEntry.async("blob");
+                const file = new File([blob], doc.fileName, { type: blob.type });
+                doc.fileId = doc.fileId || `file-${crypto.randomUUID()}`;
+                await saveFile(doc.fileId, file);
+            }
+        }
+        if (doc.additionalFileNames?.length > 0) {
+            doc.additionalFileIds = doc.additionalFileIds || [];
+            for (let i = 0; i < doc.additionalFileNames.length; i++) {
+                const fileName = doc.additionalFileNames[i];
+                const fileEntry = zip.file(`${folder}/${fileName}`);
+                 if(fileEntry) {
+                    const blob = await fileEntry.async("blob");
+                    const file = new File([blob], fileName, { type: blob.type });
+                    doc.additionalFileIds[i] = doc.additionalFileIds[i] || `file-${crypto.randomUUID()}`;
+                    await saveFile(doc.additionalFileIds[i], file);
+                }
+            }
+        }
+      };
+
+      if (restoredData.documents) await Promise.all(restoredData.documents.map((doc: any) => processDocFiles(doc, 'incoming')));
+      if (restoredData.outgoingDocuments) await Promise.all(restoredData.outgoingDocuments.map((doc: any) => processDocFiles(doc, 'outgoing')));
+      
+      await loadData(restoredData);
+  };
+
+  const handleExportFullBackup = async () => {
+    addToast('Iniciando la creación del respaldo...', 'info');
+    try {
+      const zip = new JSZip();
+      const storableState = createStorableState(documents, tasks, outgoingDocuments, folderStructure);
+      zip.file("data.json", JSON.stringify(storableState, null, 2));
+
+      const incomingFolder = zip.folder("incoming");
+      if (incomingFolder) {
+        for (const doc of documents) {
+          if (doc.file) { incomingFolder.file(doc.file.name, doc.file); }
+          if (doc.additionalFiles) {
+            for (const f of doc.additionalFiles) { incomingFolder.file(f.name, f); }
+          }
+        }
+      }
+
+      const outgoingFolder = zip.folder("outgoing");
+      if (outgoingFolder) {
+        for (const doc of outgoingDocuments) {
+          if (doc.file && doc.fileName) { outgoingFolder.file(doc.fileName, doc.file); }
+        }
+      }
+
+      const content = await zip.generateAsync({ type: "blob" });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(content);
+      link.download = `respaldo_gestor_pro_${new Date().toISOString().split('T')[0]}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      addToast('Respaldo completo descargado exitosamente.', 'success');
+    } catch (e) {
+      console.error("Error creating full backup:", e);
+      addToast('Ocurrió un error al crear el respaldo.', 'error');
+    }
+  };
+
+  const handleImportFullBackup = async (file: File) => {
+    addToast('Restaurando desde el respaldo...', 'info');
+    try {
+      await restoreDataFromZipBlob(file);
+      addToast('Restauración completada exitosamente.', 'success');
+    } catch (e) {
+      console.error("Error restoring from backup:", e);
+      addToast('Error al restaurar el respaldo. El archivo puede estar corrupto.', 'error');
+    }
+  };
+  
+  useEffect(() => {
+    const fetchArchives = async () => {
+        const years = await listArchives();
+        setAvailableArchives(years);
+    };
+    fetchArchives();
+  }, []);
+
+  const handleArchiveYear = async () => {
+    const currentYear = new Date().getFullYear();
+    addToast(`Archivando datos del año ${currentYear}...`, 'info');
+    try {
+        const zip = new JSZip();
+        const storableState = createStorableState(documents, tasks, outgoingDocuments, folderStructure);
+        zip.file("data.json", JSON.stringify(storableState, null, 2));
+        
+        const incomingFolder = zip.folder("incoming");
+        if(incomingFolder) { for (const doc of documents) { if (doc.file) { incomingFolder.file(doc.file.name, doc.file); }}}
+        const outgoingFolder = zip.folder("outgoing");
+        if(outgoingFolder) { for (const doc of outgoingDocuments) { if (doc.file && doc.fileName) { outgoingFolder.file(doc.fileName, doc.file); }}}
+
+        const content = await zip.generateAsync({ type: "blob" });
+        await saveArchive(currentYear, content);
+
+        resetLocalData();
+        
+        setAvailableArchives(prev => [currentYear, ...prev].sort((a,b)=>b-a));
+        addToast(`Año ${currentYear} archivado exitosamente.`, 'success');
+    } catch (error) {
+        console.error("Error archiving year:", error);
+        addToast(`Ocurrió un error al archivar el año ${currentYear}.`, 'error');
+    }
+  };
+
+  const handleViewArchive = async (year: number) => {
+    addToast(`Cargando archivo del año ${year}...`, 'info');
+    try {
+        const archiveBlob = await getArchive(year);
+        if (!archiveBlob) throw new Error(`No se encontró el archivo para el año ${year}.`);
+        await restoreDataFromZipBlob(archiveBlob);
+        setArchiveViewYear(year);
+        addToast(`Viendo los datos del año ${year} (Modo Solo Lectura).`, 'info');
+    } catch (error) {
+        console.error("Error loading archive:", error);
+        addToast(`Error al cargar el archivo del año ${year}.`, 'error');
+    }
+  };
+
+  const handleExitArchiveView = async () => {
+    addToast('Volviendo al año actual...', 'info');
+    setArchiveViewYear(null);
+    if (user) {
+        // Reload from cloud
+        const response = await fetch('/.netlify/functions/getFromFirestore', { headers: { 'Authorization': `Bearer ${user.token.access_token}` } });
+        const data = await response.json();
+        await loadData(data);
+    } else {
+        // Fallback for non-logged-in state (shouldn't happen)
+        await loadData();
+    }
+  };
+
+  const renderContent = () => {
+    if (isFetchingInitialData) {
+        return (
+            <div className="flex h-full w-full flex-col items-center justify-center text-center">
+                <IconLoader className="w-12 h-12 text-primary-light dark:text-primary-dark" />
+                <p className="mt-4 text-lg font-semibold text-text-secondary-light dark:text-text-secondary-dark">
+                    Sincronizando tus datos desde la nube...
+                </p>
+            </div>
+        );
+    }
+
+    const isReadOnly = !!archiveViewYear;
+    switch (activeSection) {
+      case Section.Principal:
+        return <Principal addDocumentAndTask={addDocumentAndTask} addTask={addTask} addDocument={addDocument} addOutgoingDocument={addOutgoingDocument} folders={folderStructure} isReadOnly={isReadOnly} />;
+      case Section.Entrantes:
+        return <IncomingDocumentsList documents={documents} />;
+      case Section.Tareas:
+        return <TasksList tasks={tasks} documents={documents} onStartCompletion={handleStartTaskCompletion} updateTask={updateTask} isReadOnly={isReadOnly} />;
+      case Section.Salientes:
+        return <OutgoingDocumentsList documents={outgoingDocuments} />;
+      case Section.Informes:
+        return <Reports tasks={tasks} documents={documents} outgoingDocuments={outgoingDocuments} />;
+      case Section.Ajustes:
+        return <Settings user={user} folders={folderStructure} onAddFolder={addFolder} onRenameFolder={renameFolder} onDeleteFolder={deleteFolder} themeMode={themeMode} onThemeChange={handleThemeModeChange} accentColor={accentColor} onAccentColorChange={setAccentColor} handleExportFullBackup={handleExportFullBackup} handleImportFullBackup={handleImportFullBackup} availableArchives={availableArchives} onArchiveYear={handleArchiveYear} onViewArchive={handleViewArchive} />;
+      default:
+        return <ContentPlaceholder title={activeSection} />;
+    }
+  };
+
+  if (!isLoaded || !isAuthReady) {
+    return (
+      <div className="flex h-screen w-screen items-center justify-center bg-background-light dark:bg-background-dark">
+        <IconLoader className="w-12 h-12 text-primary-light dark:text-primary-dark" />
+      </div>
+    );
+  }
+  
+  if (!user) {
+    return <LoginScreen onLogin={() => window.netlifyIdentity.open()} />;
+  }
+
+
+  const headerTitle = activeSection === Section.Principal ? "Gestor Archivístico y de Tareas" : activeSection;
+  const headerDescription = sectionDescriptions[activeSection];
+  const hasPendingTasks = tasks.some(t => t.status === 'pendiente');
+  const hasInProcessTasks = tasks.some(t => t.status === 'en proceso');
+  const isReadOnly = !!archiveViewYear;
+
+  return (
+    <>
+      <div className="flex h-screen bg-background-light dark:bg-background-dark text-text-primary-light dark:text-text-primary-dark font-sans">
+        <Sidebar activeSection={activeSection} setActiveSection={setActiveSection} theme={theme} toggleTheme={toggleTheme} themeMode={themeMode} currentYearView={archiveViewYear} />
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {isReadOnly && <ArchiveViewBanner year={archiveViewYear!} onExit={handleExitArchiveView} />}
+          <Header title={headerTitle} description={headerDescription} onToggleAiPanel={toggleAiPanel} isAiPanelOpen={isAiPanelOpen} globalSearchTerm={globalSearchTerm} onGlobalSearchChange={setGlobalSearchTerm} onSearchFocus={() => setIsSearchActive(true)} hasPendingTasks={hasPendingTasks} hasInProcessTasks={hasInProcessTasks} onBellClick={() => setIsNotificationsModalOpen(true)} user={user} onLogout={() => window.netlifyIdentity.logout()} isSyncing={isSyncing} syncError={syncError} onManualSync={handleManualSync} />
+          <div className="flex-1 flex overflow-hidden">
+            <main className="flex-1 p-6 md:p-8 overflow-y-auto transition-all duration-300 ease-in-out">
+              {renderContent()}
+            </main>
+            <AiAssistantPanel isOpen={isAiPanelOpen} onClose={toggleAiPanel} tasks={tasks} documents={documents} outgoingDocuments={outgoingDocuments} />
+          </div>
+        </div>
+        {!isReadOnly && taskBeingCompleted && (
+          <OutgoingDocModal isOpen={!!taskBeingCompleted} onClose={() => setTaskBeingCompleted(null)} onSubmit={handleFinalizeCompletion} task={taskBeingCompleted} originalDocument={relatedDocumentForTask} resultFile={resultFileForTask} folders={folderStructure} />
+        )}
+        <WelcomeCard />
+      </div>
+      {isSearchActive && globalSearchTerm && (
+        <GlobalSearchResults results={searchResults} onResultClick={handleSearchResultClick} onClose={() => { setIsSearchActive(false); setGlobalSearchTerm(''); }} />
+      )}
+      {isNotificationsModalOpen && (
+        <NotificationsModal isOpen={isNotificationsModalOpen} onClose={() => setIsNotificationsModalOpen(false)} pendingTasks={tasks.filter(t => t.status === 'pendiente')} inProcessTasks={tasks.filter(t => t.status === 'en proceso')} documents={documents} onGoToTasks={() => { setActiveSection(Section.Tareas); setIsNotificationsModalOpen(false); }} />
+      )}
+      <ToastContainer toasts={toasts} removeToast={removeToast} />
+    </>
+  );
+};
+
+export default App;
