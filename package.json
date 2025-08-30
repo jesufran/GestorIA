@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "Una aplicación elegante para gestionar documentos, tareas, seguimientos e informes con modos claro y oscuro.",
   "private": true,
-  "type": "module",
+  
   "scripts": {
     "build": "remix vite:build",
     "dev": "remix vite:dev",
