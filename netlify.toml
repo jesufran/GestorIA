@@ -3,7 +3,7 @@
   publish = "build/client"
 
 [build.environment]
-  NODE_VERSION = "20.11.0"
+  NODE_VERSION = "20.11.1"
 
   [functions]
   directory = "netlify/functions"
