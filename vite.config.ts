@@ -16,7 +16,7 @@ export default defineConfig(({ mode }) => {
           v3_throwAbortReason: true,
         },
         ignoredRouteFiles: ["**/.*"],
-        appDirectory: "app",
+        appDirectory: ".",
         assetsBuildDirectory: "public/build",
         publicPath: "/build/",
         serverBuildPath: "build/index.js",
