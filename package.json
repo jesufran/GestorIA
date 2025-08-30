@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Una aplicación elegante para gestionar documentos, tareas, seguimientos e informes con modos claro y oscuro.",
   "private": true,
-  
   "scripts": {
     "build": "remix vite:build",
     "dev": "remix vite:dev",
@@ -15,8 +14,10 @@
     "@remix-run/node": "^2.17.0",
     "@remix-run/react": "^2.17.0",
     "@remix-run/serve": "^2.17.0",
+    "@types/jszip": "^3.4.0",
     "firebase-admin": "^12.0.0",
     "isbot": "^4.1.0",
+    "jszip": "^3.10.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
