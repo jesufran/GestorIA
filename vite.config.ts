@@ -1,5 +1,6 @@
 import { vitePlugin as remix } from "@remix-run/dev";
 import { defineConfig, loadEnv } from "vite";
+import { netlifyPlugin } from "@netlify/remix-adapter/plugin";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig(({ mode }) => {
@@ -14,6 +15,7 @@ export default defineConfig(({ mode }) => {
           v3_throwAbortReason: true,
         },
       }),
+      netlifyPlugin(),
       tsconfigPaths(),
     ],
     define: {
