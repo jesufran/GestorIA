@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { IconArchive } from './icons/IconArchive';
-
+import { IconEye } from './icons/IconEye';
 import { IconLoader } from './icons/IconLoader';
 
 interface AnnualArchiveSettingsProps {

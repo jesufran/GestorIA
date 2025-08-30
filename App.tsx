@@ -19,13 +19,6 @@ import ToastContainer from './components/ToastContainer';
 import ArchiveViewBanner from './components/ArchiveViewBanner';
 import { saveArchive, getArchive, listArchives, saveFile, getFile } from './db';
 import { IconLoader } from './components/icons/IconLoader';
-import LoginScreen from './components/LoginScreen';
-
-declare global {
-    interface Window {
-        netlifyIdentity: any;
-    }
-}
 
 const sectionDescriptions: Record<Section, string> = {
   [Section.Principal]: "Empiece a gestionar sus documentos y tareas.",
@@ -57,6 +50,18 @@ interface SearchResult {
 const APP_DATA_KEY = 'gestorProData';
 const APP_SETTINGS_KEY = 'gestorProSettings';
 
+// Mock user to bypass login
+const mockUser: NetlifyUser = {
+    id: 'local-user',
+    user_metadata: {
+        full_name: 'Usuario Local',
+    },
+    email: 'local@example.com',
+    token: {
+        access_token: 'mock-token',
+    },
+};
+
 // Helper function to create a savable version of the state by replacing files with IDs
 const createStorableState = (documents: Document[], tasks: Task[], outgoingDocuments: OutgoingDocument[], folderStructure: Folder[]) => {
     return {
@@ -83,9 +88,7 @@ const createStorableState = (documents: Document[], tasks: Task[], outgoingDocum
 
 const App: React.FC = () => {
   const [isLoaded, setIsLoaded] = useState(false);
-  const [isAuthReady, setIsAuthReady] = useState(false);
-  const [user, setUser] = useState<NetlifyUser | null>(null);
-  const debounceTimer = useRef<number | null>(null);
+  const [user, setUser] = useState<NetlifyUser | null>(mockUser);
 
   // State initialization with defaults
   const [themeMode, setThemeMode] = useState<ThemeMode>('system');
@@ -107,11 +110,6 @@ const App: React.FC = () => {
   const [archiveViewYear, setArchiveViewYear] = useState<number | null>(null);
   const [availableArchives, setAvailableArchives] = useState<number[]>([]);
   
-  // Sync state
-  const [isSyncing, setIsSyncing] = useState(false);
-  const [syncError, setSyncError] = useState(false);
-  const [isFetchingInitialData, setIsFetchingInitialData] = useState(false);
-
   // Async data loading on startup
   useEffect(() => {
     const bootstrapApp = async () => {
@@ -121,7 +119,7 @@ const App: React.FC = () => {
             setThemeMode(settings.themeMode || 'system');
             setAccentColor(settings.accentColor || 'indigo');
 
-            // No longer loading data here initially; it will happen on login.
+            await loadData();
         } catch (e) {
             console.error("Error bootstrapping app:", e);
         } finally {
@@ -130,67 +128,6 @@ const App: React.FC = () => {
     };
     bootstrapApp();
   }, []);
-
-    // Netlify Identity Authentication
-    useEffect(() => {
-        const loadDataFromFirestore = async (currentUser: NetlifyUser) => {
-            setIsFetchingInitialData(true);
-            try {
-                const response = await fetch('/.netlify/functions/getFromFirestore', {
-                    headers: { 'Authorization': `Bearer ${currentUser.token.access_token}` }
-                });
-                if (!response.ok) throw new Error('No se pudieron obtener los datos de la nube.');
-                
-                const data = await response.json();
-                
-                if (data && Object.keys(data).length > 0) {
-                     await loadData(data);
-                     addToast("Datos sincronizados desde la nube.", "info");
-                } else {
-                     // New user or empty data, clear local state
-                     resetLocalData();
-                }
-                 setSyncError(false);
-            } catch (error: any) {
-                console.error("Error fetching from Firestore:", error);
-                addToast(error.message, "error");
-                setSyncError(true);
-            } finally {
-                setIsFetchingInitialData(false);
-            }
-        };
-
-        if (isLoaded) {
-            window.netlifyIdentity.on('init', (user: NetlifyUser | null) => {
-                setUser(user);
-                setIsAuthReady(true);
-                if (user) {
-                   loadDataFromFirestore(user);
-                }
-            });
-            window.netlifyIdentity.on('login', (user: NetlifyUser) => {
-                setUser(user);
-                window.netlifyIdentity.close();
-                addToast(`Bienvenido, ${user.user_metadata?.full_name || user.email}`, 'success');
-                loadDataFromFirestore(user);
-            });
-            window.netlifyIdentity.on('logout', () => {
-                setUser(null);
-                addToast('Has cerrado sesión.', 'info');
-                resetLocalData();
-            });
-
-            window.netlifyIdentity.init();
-        }
-
-        return () => {
-            if (window.netlifyIdentity) {
-                window.netlifyIdentity.off('login');
-                window.netlifyIdentity.off('logout');
-            }
-        };
-    }, [isLoaded]);
-
 
   const loadData = async (dataToLoad?: any) => {
     try {
@@ -236,33 +173,11 @@ const App: React.FC = () => {
     localStorage.removeItem(APP_DATA_KEY);
   };
 
-  const syncToFirestore = async () => {
-      if (!user) return;
-      setIsSyncing(true);
-      setSyncError(false);
-      try {
-          const storableState = createStorableState(documents, tasks, outgoingDocuments, folderStructure);
-          const response = await fetch('/.netlify/functions/syncToFirestore', {
-              method: 'POST',
-              headers: { 'Authorization': `Bearer ${user.token.access_token}` },
-              body: JSON.stringify(storableState)
-          });
-          if (!response.ok) throw new Error('Error en la respuesta del servidor de sincronización.');
-      } catch (err) {
-          console.error("Sync error:", err);
-          addToast("Error al sincronizar con la nube.", "error");
-          setSyncError(true);
-      } finally {
-          setIsSyncing(false);
-      }
-  };
-
-
-  // Effect for saving data locally and syncing to Firestore
+  // Effect for saving data locally
   useEffect(() => {
-    if (!isLoaded || archiveViewYear || isFetchingInitialData) return;
+    if (!isLoaded || archiveViewYear) return;
     
-    const saveDataLocalAndSync = async () => {
+    const saveDataLocal = async () => {
         try {
             // 1. Save local files to IndexedDB
             for (const doc of documents) {
@@ -284,28 +199,13 @@ const App: React.FC = () => {
             
             // 2. Save state reference to localStorage
             localStorage.setItem(APP_DATA_KEY, JSON.stringify(storableState));
-            
-            // 3. Debounce sync to Firestore
-            if (user) {
-              if (debounceTimer.current) clearTimeout(debounceTimer.current);
-              debounceTimer.current = window.setTimeout(syncToFirestore, 1500);
-            }
 
         } catch (e) {
             console.error("Could not save state", e);
         }
     };
-    saveDataLocalAndSync();
-  }, [documents, tasks, outgoingDocuments, folderStructure, isLoaded, archiveViewYear, user, isFetchingInitialData]);
-
-  const handleManualSync = () => {
-      if (debounceTimer.current) {
-          clearTimeout(debounceTimer.current);
-      }
-      addToast('Sincronizando con la nube...', 'info');
-      syncToFirestore();
-  };
-
+    saveDataLocal();
+  }, [documents, tasks, outgoingDocuments, folderStructure, isLoaded, archiveViewYear]);
 
   const addToast = (message: string, type: ToastType = 'info') => {
     const id = `toast-${Date.now()}`;
@@ -664,29 +564,10 @@ const App: React.FC = () => {
   const handleExitArchiveView = async () => {
     addToast('Volviendo al año actual...', 'info');
     setArchiveViewYear(null);
-    if (user) {
-        // Reload from cloud
-        const response = await fetch('/.netlify/functions/getFromFirestore', { headers: { 'Authorization': `Bearer ${user.token.access_token}` } });
-        const data = await response.json();
-        await loadData(data);
-    } else {
-        // Fallback for non-logged-in state (shouldn't happen)
-        await loadData();
-    }
+    await loadData();
   };
 
   const renderContent = () => {
-    if (isFetchingInitialData) {
-        return (
-            <div className="flex h-full w-full flex-col items-center justify-center text-center">
-                <IconLoader className="w-12 h-12 text-primary-light dark:text-primary-dark" />
-                <p className="mt-4 text-lg font-semibold text-text-secondary-light dark:text-text-secondary-dark">
-                    Sincronizando tus datos desde la nube...
-                </p>
-            </div>
-        );
-    }
-
     const isReadOnly = !!archiveViewYear;
     switch (activeSection) {
       case Section.Principal:
@@ -706,18 +587,22 @@ const App: React.FC = () => {
     }
   };
 
-  if (!isLoaded || !isAuthReady) {
+  const handleLogout = () => {
+      if (confirm("¿Está seguro de que desea salir? Esta acción borrará todos sus datos locales.")) {
+          resetLocalData();
+          localStorage.removeItem(APP_SETTINGS_KEY);
+          addToast("Datos locales borrados. La aplicación se recargará.", "info");
+          setTimeout(() => window.location.reload(), 1500);
+      }
+  };
+
+  if (!isLoaded) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-background-light dark:bg-background-dark">
         <IconLoader className="w-12 h-12 text-primary-light dark:text-primary-dark" />
       </div>
     );
   }
-  
-  if (!user) {
-    return <LoginScreen onLogin={() => window.netlifyIdentity.open()} />;
-  }
-
 
   const headerTitle = activeSection === Section.Principal ? "Gestor Archivístico y de Tareas" : activeSection;
   const headerDescription = sectionDescriptions[activeSection];
@@ -731,7 +616,7 @@ const App: React.FC = () => {
         <Sidebar activeSection={activeSection} setActiveSection={setActiveSection} theme={theme} toggleTheme={toggleTheme} themeMode={themeMode} currentYearView={archiveViewYear} />
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {isReadOnly && <ArchiveViewBanner year={archiveViewYear!} onExit={handleExitArchiveView} />}
-          <Header title={headerTitle} description={headerDescription} onToggleAiPanel={toggleAiPanel} isAiPanelOpen={isAiPanelOpen} globalSearchTerm={globalSearchTerm} onGlobalSearchChange={setGlobalSearchTerm} onSearchFocus={() => setIsSearchActive(true)} hasPendingTasks={hasPendingTasks} hasInProcessTasks={hasInProcessTasks} onBellClick={() => setIsNotificationsModalOpen(true)} user={user} onLogout={() => window.netlifyIdentity.logout()} isSyncing={isSyncing} syncError={syncError} onManualSync={handleManualSync} />
+          <Header title={headerTitle} description={headerDescription} onToggleAiPanel={toggleAiPanel} isAiPanelOpen={isAiPanelOpen} globalSearchTerm={globalSearchTerm} onGlobalSearchChange={setGlobalSearchTerm} onSearchFocus={() => setIsSearchActive(true)} hasPendingTasks={hasPendingTasks} hasInProcessTasks={hasInProcessTasks} onBellClick={() => setIsNotificationsModalOpen(true)} user={user} onLogout={handleLogout} />
           <div className="flex-1 flex overflow-hidden">
             <main className="flex-1 p-6 md:p-8 overflow-y-auto transition-all duration-300 ease-in-out">
               {renderContent()}

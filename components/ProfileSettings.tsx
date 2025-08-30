@@ -1,7 +1,8 @@
 import React from 'react';
 import { NetlifyUser } from '../types';
 import { IconUser } from './icons/IconUser';
-
+import { IconMail } from './icons/IconMail';
+import { IconExternalLink } from './icons/IconExternalLink';
 
 interface ProfileSettingsProps {
     user: NetlifyUser | null;
@@ -12,12 +13,6 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user }) => {
     if (!user) {
         return <div>No hay información de usuario disponible.</div>;
     }
-
-    const handleManageAccount = () => {
-        if (window.netlifyIdentity) {
-            window.netlifyIdentity.open('user');
-        }
-    };
     
     return (
         <div className="space-y-8">
@@ -55,11 +50,11 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user }) => {
             <div className="pt-6 border-t border-border-light dark:border-border-dark">
                  <h4 className="font-semibold text-text-primary-light dark:text-text-primary-dark">Gestionar Cuenta</h4>
                 <p className="text-sm text-text-secondary-light dark:text-text-secondary-dark mt-1 max-w-xl">
-                   Para cambiar su nombre, correo electrónico o contraseña, utilice el portal de gestión de cuentas.
+                   La gestión de cuentas en línea está desactivada en el modo local. Para cambiar su nombre, correo o contraseña, necesitaría usar la versión con autenticación.
                 </p>
                 <button 
-                    onClick={handleManageAccount}
-                    className="mt-4 inline-flex items-center px-4 py-2 bg-primary-light dark:bg-primary-dark text-white text-sm font-semibold rounded-md shadow-sm hover:bg-indigo-700 dark:hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-light dark:focus:ring-offset-background-dark"
+                    disabled
+                    className="mt-4 inline-flex items-center px-4 py-2 bg-primary-light dark:bg-primary-dark text-white text-sm font-semibold rounded-md shadow-sm disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed"
                 >
                     <span className="mr-2">Gestionar Cuenta</span>
                     <IconExternalLink className="w-4 h-4" />

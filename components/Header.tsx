@@ -5,9 +5,6 @@ import { IconSearch } from './icons/IconSearch';
 import { IconUser } from './icons/IconUser';
 import { IconLogout } from './icons/IconLogout';
 import { NetlifyUser } from '../types';
-import { IconCloud } from './icons/IconCloud';
-import { IconCloudOff } from './icons/IconCloudOff';
-import { IconSync } from './icons/IconSync';
 
 interface HeaderProps {
   title: string;
@@ -22,18 +19,9 @@ interface HeaderProps {
   onBellClick: () => void;
   user: NetlifyUser | null;
   onLogout: () => void;
-  isSyncing: boolean;
-  syncError: boolean;
-  onManualSync: () => void;
 }
 
-const Header: React.FC<HeaderProps> = ({ title, description, onToggleAiPanel, isAiPanelOpen, globalSearchTerm, onGlobalSearchChange, onSearchFocus, hasPendingTasks, hasInProcessTasks, onBellClick, user, onLogout, isSyncing, syncError, onManualSync }) => {
-  const getSyncTitle = () => {
-    if (syncError) return "Error de sincronización. Sus últimos cambios no se han guardado en la nube.";
-    if (isSyncing) return "Sincronizando cambios con la nube...";
-    return "Datos sincronizados y respaldados en la nube.";
-  };
-  
+const Header: React.FC<HeaderProps> = ({ title, description, onToggleAiPanel, isAiPanelOpen, globalSearchTerm, onGlobalSearchChange, onSearchFocus, hasPendingTasks, hasInProcessTasks, onBellClick, user, onLogout }) => {
   return (
     <header className="flex items-center justify-between px-6 md:px-8 h-20 bg-white dark:bg-background-dark border-b border-border-light dark:border-secondary-dark transition-colors duration-300 flex-shrink-0">
       <div className="w-2/5 min-w-0">
@@ -56,23 +44,6 @@ const Header: React.FC<HeaderProps> = ({ title, description, onToggleAiPanel, is
       </div>
 
       <div className="flex items-center space-x-2 justify-end">
-        <button
-          aria-label="Sincronizar Ahora"
-          title="Sincronizar Ahora"
-          onClick={onManualSync}
-          disabled={isSyncing}
-          className="p-2 text-text-secondary-light dark:text-text-secondary-dark rounded-full hover:bg-gray-100 dark:hover:bg-border-dark focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-light dark:focus:ring-offset-background-dark disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <IconSync className={`w-5 h-5 ${isSyncing ? 'animate-spin' : ''}`} />
-        </button>
-        <div className="p-2" title={getSyncTitle()}>
-            {syncError 
-                ? <IconCloudOff className="w-6 h-6 text-red-500" /> 
-                : isSyncing 
-                ? <IconCloud className="w-6 h-6 text-primary-light dark:text-primary-dark animate-pulse" /> 
-                : <IconCloud className="w-6 h-6 text-green-500" />
-            }
-        </div>
         <button
           aria-label="Asistente IA"
           onClick={onToggleAiPanel}
