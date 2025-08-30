@@ -17,9 +17,7 @@ export default defineConfig(({ mode }) => {
         },
         ignoredRouteFiles: ["**/.*"],
         appDirectory: ".",
-        assetsBuildDirectory: "public/build",
-        publicPath: "/build/",
-        serverBuildPath: "build/index.js",
+        buildDirectory: "public/build", // Corrected property name
       }),
       netlifyPlugin(),
       tsconfigPaths(),
@@ -34,6 +32,10 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       target: 'esnext',
+      publicPath: "/build/",
+      rollupOptions: {
+        external: ["idb"]
+      }
     },
     server: {
       port: 3000,
