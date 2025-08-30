@@ -5,7 +5,7 @@ import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
-  
+
   return {
     plugins: [
       remix({
@@ -17,28 +17,30 @@ export default defineConfig(({ mode }) => {
         },
         ignoredRouteFiles: ["**/.*"],
         appDirectory: ".",
-        buildDirectory: "public/build", // Corrected property name
+        buildDirectory: "public/build",         // assets cliente
+        serverBuildPath: "build/server/index.js" // build del SSR
       }),
       netlifyPlugin(),
       tsconfigPaths(),
     ],
     define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+      "process.env.GEMINI_API_KEY": JSON.stringify(env.GEMINI_API_KEY),
     },
     resolve: {
       alias: {
-        '@': new URL('.', import.meta.url).pathname,
-      }
+        "@": new URL(".", import.meta.url).pathname,
+      },
     },
     build: {
-      target: 'esnext',
+      target: "esnext",
       publicPath: "/build/",
       rollupOptions: {
-        external: ["idb"]
-      }
+        external: ["idb"],
+      },
     },
     server: {
       port: 3000,
     },
   };
 });
+
