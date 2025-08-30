@@ -1,8 +1,8 @@
-import { GoogleGenAI, GenerateContentResponse, Content, HarmCategory, HarmBlockThreshold } from "@google/genai";
+import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from "@google/generative-ai";
 import type { Handler } from "@netlify/functions";
 
 interface RequestPayload {
-  contents: Content;
+  contents: any[];
   config?: any;
 }
 
@@ -26,43 +26,79 @@ const safetySettings = [
 ];
 
 const handler: Handler = async (event) => {
-  if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+  // Headers CORS para permitir llamadas desde el frontend
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  };
+
+  // Manejar preflight OPTIONS request
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: corsHeaders,
+      body: '',
+    };
   }
 
-  const apiKey = process.env.API_KEY;
+  if (event.httpMethod !== 'POST') {
+    return { 
+      statusCode: 405, 
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'Method Not Allowed' })
+    };
+  }
+
+  // Usar GEMINI_API_KEY en lugar de API_KEY para consistencia
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'La clave API de IA no está configurada en el servidor.' }) };
+    return { 
+      statusCode: 500, 
+      headers: corsHeaders,
+      body: JSON.stringify({ error: 'La clave API de Gemini no está configurada en el servidor.' })
+    };
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey });
+    const genAI = new GoogleGenerativeAI(apiKey);
     const body: RequestPayload = JSON.parse(event.body || '{}');
     
     if (!body.contents) {
-        return { statusCode: 400, body: JSON.stringify({ error: 'Falta el contenido en la solicitud.' }) };
+      return { 
+        statusCode: 400, 
+        headers: corsHeaders,
+        body: JSON.stringify({ error: 'Falta el contenido en la solicitud.' })
+      };
     }
 
-    const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: body.contents,
-        config: {
-          ...body.config,
-          safetySettings,
-        },
+    // Obtener el modelo correcto
+    const model = genAI.getGenerativeModel({ 
+      model: "gemini-1.5-flash",
+      safetySettings 
     });
+
+    const result = await model.generateContent(body.contents);
+    const response = await result.response;
+    const text = response.text();
 
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: response.text }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...corsHeaders,
+      },
+      body: JSON.stringify({ text }),
     };
 
   } catch (error: any) {
     console.error('Error calling Gemini API:', error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: `Ocurrió un error al procesar la solicitud de IA: ${error.message}` }),
+      headers: corsHeaders,
+      body: JSON.stringify({ 
+        error: `Ocurrió un error al procesar la solicitud de IA: ${error.message}` 
+      }),
     };
   }
 };
